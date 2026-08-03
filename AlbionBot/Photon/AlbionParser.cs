@@ -3,73 +3,57 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
-using PhotonPackageParser;
+using AlbionBot.Models;
 
 namespace AlbionBot.Photon;
 
 public class AlbionParser : PhotonParser
 {
-    private const byte OP_AUCTION_GET_OFFERS = 75;
-    private const byte OP_AUCTION_GET_REQUESTS = 76;
-
-    // FIX: Updated signature to accept OperationResponse object
-    protected override void OnResponse(OperationResponse response)
+    public AlbionParser()
     {
-        if (response.OperationCode == OP_AUCTION_GET_OFFERS)
-        {
-            Console.WriteLine("\n[Market] Intercepted Auction Offers!");
-            ParseMarketData(response.Parameters);
-        }
-        else if (response.OperationCode == OP_AUCTION_GET_REQUESTS)
-        {
-            Console.WriteLine("\n[Market] Intercepted Auction Requests!");
-            ParseMarketData(response.Parameters);
-        }
+        this.OnMessageReady += HandleMessage;
     }
 
-    // FIX: Updated signature to accept EventData object
-    protected override void OnEvent(EventData eventData)
+    private void HandleMessage(PhotonMessage message)
     {
-        if (eventData.Code == 81) // Silver Update
+        Console.WriteLine($"\n[Custom Parser SUCCESS] MessageType: {message.MessageType} | Code: {message.Code}");
+
+        if (message.Parameters == null || message.Parameters.Count == 0)
         {
-            if (eventData.Parameters.TryGetValue(1, out var silverAmount))
+            Console.WriteLine("   -> [Debug] Parameters dictionary is EMPTY. (Deserializer might have failed silently)");
+            return;
+        }
+
+        Console.WriteLine($"   -> [Debug] Parameters contain {message.Parameters.Count} keys.");
+
+        // Dump ALL keys and their data types to see exactly where Albion is hiding the data
+        foreach (var kvp in message.Parameters)
+        {
+            string typeName = kvp.Value != null ? kvp.Value.GetType().Name : "NULL";
+            Console.WriteLine($"   -> Key: {kvp.Key} | Data Type: {typeName}");
+
+            // Look for Uncompressed JSON Arrays (Matches your old working script logic)
+            if (kvp.Value is string[] jsonArray)
             {
-                long trueSilver = Convert.ToInt64(silverAmount) / 10000;
-                Console.WriteLine($"[Player] Silver Updated: {trueSilver:N0}");
-            }
-        }
-    }
-
-    // FIX: Updated signature to accept OperationRequest object
-    protected override void OnRequest(OperationRequest request)
-    {
-        // Not needed for simple market scraping
-    }
-
-    private void ParseMarketData(Dictionary<byte, object> parameters)
-    {
-        // Market data is usually stored at key '0'
-        if (parameters.TryGetValue(0, out var rawData))
-        {
-            // Scenario 1: Uncompressed JSON Array
-            if (rawData is string[] jsonArray)
-            {
+                Console.WriteLine($"      [!] FOUND STRING ARRAY! ({jsonArray.Length} items)");
                 foreach (var jsonString in jsonArray)
                 {
-                    Console.WriteLine($"[Data]: {jsonString}");
+                    // Print first 300 chars to avoid flooding the console completely
+                    Console.WriteLine($"      [Data]: {jsonString.Substring(0, Math.Min(jsonString.Length, 300))}...");
                 }
             }
-            // Scenario 2: GZip Compressed Byte Array (Albion does this for large queries)
-            else if (rawData is byte[] compressedBytes)
+            // Look for Compressed GZip Byte Arrays (Albion's standard for huge market requests)
+            else if (kvp.Value is byte[] compressedBytes)
             {
+                Console.WriteLine($"      [!] FOUND BYTE ARRAY! ({compressedBytes.Length} bytes). Attempting Decompression...");
                 try
                 {
                     string decompressedJson = DecompressGzip(compressedBytes);
-                    Console.WriteLine($"[Decompressed Data]: {decompressedJson}");
+                    Console.WriteLine($"      [Decompressed Data]: {decompressedJson.Substring(0, Math.Min(decompressedJson.Length, 500))}...");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[GZip Error]: {ex.Message}");
+                    Console.WriteLine($"      [GZip Error]: {ex.Message}");
                 }
             }
         }
@@ -86,6 +70,8 @@ public class AlbionParser : PhotonParser
             gzipStream.CopyTo(resultStream);
             return Encoding.UTF8.GetString(resultStream.ToArray());
         }
-        return Encoding.UTF8.GetString(data);
+        
+        // If it's not GZipped, maybe it's just a raw JSON byte string
+        return Encoding.UTF8.GetString(data); 
     }
 }

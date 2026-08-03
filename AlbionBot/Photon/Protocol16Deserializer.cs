@@ -15,10 +15,13 @@ public static class Protocol16Deserializer
         using var ms = new MemoryStream(payload);
         using var reader = new BinaryReader(ms);
 
-        // SAFEGUARD: Only parse unencrypted Protocol 16 packets
-        if (reader.ReadByte() != 243) return null; 
+        // Safeguard: Drop encrypted/obfuscated traffic
+        if (reader.ReadByte() != 243) return null;
 
         var msg = new PhotonMessage { MessageType = (MessageType)reader.ReadByte() };
+        
+        // NEW: Save the raw uncompressed bytes for Regex scraping!
+        msg.RawPayload = payload; 
 
         if (msg.MessageType == MessageType.Request || msg.MessageType == MessageType.Event)
         {
@@ -39,14 +42,23 @@ public static class Protocol16Deserializer
         for (int i = 0; i < paramCount; i++)
         {
             if (ms.Position >= ms.Length) break;
+            
+            byte paramId = 0;
+            byte paramType = 0;
+            
             try 
             {
-                byte paramId = reader.ReadByte();
-                byte paramType = reader.ReadByte();
+                paramId = reader.ReadByte();
+                paramType = reader.ReadByte();
                 var value = ReadValue(reader, paramType);
                 if (value != null) msg.Parameters[paramId] = value;
             }
-            catch { break; } // Truncate cleanly on error
+            catch (Exception ex) 
+            {
+                // DEBUG: Print exactly why the deserializer is returning an empty dictionary!
+                Console.WriteLine($"\n[Deserializer Error] Failed on ParamId: {paramId} | ParamType: {paramType} | Error: {ex.Message}");
+                break; 
+            }
         }
 
         return msg;

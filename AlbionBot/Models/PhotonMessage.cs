@@ -14,4 +14,6 @@ public class PhotonMessage
     public MessageType MessageType { get; set; }
     public byte Code { get; set; }
     public Dictionary<byte, object> Parameters { get; set; } = new();
+    public byte[] RawPayload { get; set; } = Array.Empty<byte>();
+
 }

@@ -92,7 +92,6 @@ public class PhotonParser
 
     private void ProcessReliableData(byte[] data)
     {
-        // 1. Decompress if GZipped (Magic bytes 1F 8B)
         if (data.Length >= 2 && data[0] == 0x1F && data[1] == 0x8B)
         {
             using var compressedStream = new MemoryStream(data);
@@ -102,7 +101,20 @@ public class PhotonParser
             data = resultStream.ToArray();
         }
 
-        // 2. Decode Protocol 16
+        // --- DEBUG HEX DUMP INJECTION ---
+        // 243 (0xF3) = Photon Signature | 3 = Response | 1 = Code 1 (Market Data)
+        if (data.Length > 10 && data[0] == 243 && data[1] == 3 && data[2] == 1)
+        {
+            Console.WriteLine("\n[DEBUG] CAUGHT MASSIVE MARKET PACKET!");
+            Console.WriteLine($"[DEBUG] Total Size: {data.Length} bytes.");
+            Console.WriteLine("[DEBUG] First 60 bytes (HEX):");
+            
+            // Print the first 60 bytes so we can see Albion's exact header alignment
+            string hex = BitConverter.ToString(data, 0, Math.Min(data.Length, 60));
+            Console.WriteLine(hex + "\n");
+        }
+        // --------------------------------
+
         var message = Protocol16Deserializer.Deserialize(data);
         if (message != null)
         {
