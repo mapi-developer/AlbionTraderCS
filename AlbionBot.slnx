@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AlbionBot.Core/AlbionBot.Core.csproj" />
+    <Project Path="src/AlbionBot.Host/AlbionBot.Host.csproj" />
+    <Project Path="src/AlbionBot.Logic/AlbionBot.Logic.csproj" />
+    <Project Path="src/AlbionBot.Network/AlbionBot.Network.csproj" />
+  </Folder>
+</Solution>
