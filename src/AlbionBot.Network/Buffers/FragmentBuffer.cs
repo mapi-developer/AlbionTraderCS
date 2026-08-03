@@ -1,73 +1,65 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using AlbionBot.Core.Enums;
 using AlbionBot.Core.Models;
-using AlbionBot.Network.Parsers; // Needs access to BinaryReaderExtensions
+using AlbionBot.Network.Parsers;
 
 namespace AlbionBot.Network.Buffers;
 
 public class FragmentBuffer
 {
-    private readonly Dictionary<int, Dictionary<int, byte[]>> _buffers = new();
-    private readonly Dictionary<int, int> _fragmentCounts = new();
-    private readonly object _lockObj = new(); // Ensures thread safety
+    private class FragmentSequence
+    {
+        public int FragmentsReceived { get; set; }
+        public uint TotalFragments { get; set; }
+        public byte[] Buffer { get; set; } = [];
+    }
+
+    private readonly Dictionary<uint, FragmentSequence> _sequences = new();
+    private readonly object _lockObj = new();
 
     public PhotonCommand? Offer(PhotonCommand cmd)
     {
         using var ms = new MemoryStream(cmd.Data);
         using var reader = new BinaryReader(ms);
 
-        // Read Fragment Header (12 bytes)
-        int sequenceNumber = reader.ReadBigEndianInt32();
-        int fragmentCount = reader.ReadBigEndianInt32();
-        int fragmentNumber = reader.ReadBigEndianInt32();
-        int totalLength = reader.ReadBigEndianInt32(); 
-        int fragmentOffset = reader.ReadBigEndianInt32();
+        // FIX: Photon fragments use Unsigned Ints for sequence limits
+        uint sequenceNumber = reader.ReadBigEndianUInt32();
+        uint fragmentCount = reader.ReadBigEndianUInt32();
+        uint fragmentNumber = reader.ReadBigEndianUInt32();
+        uint totalLength = reader.ReadBigEndianUInt32(); 
+        uint fragmentOffset = reader.ReadBigEndianUInt32();
         
         byte[] fragmentData = reader.ReadBytes((int)(ms.Length - ms.Position));
 
-        // Lock dictionary to prevent race conditions during rapid packet arrival
         lock (_lockObj)
         {
-            if (!_buffers.ContainsKey(sequenceNumber))
+            if (!_sequences.TryGetValue(sequenceNumber, out var seq))
             {
-                _buffers[sequenceNumber] = new Dictionary<int, byte[]>();
-                _fragmentCounts[sequenceNumber] = fragmentCount;
+                seq = new FragmentSequence
+                {
+                    FragmentsReceived = 0,
+                    TotalFragments = fragmentCount,
+                    Buffer = new byte[totalLength] 
+                };
+                _sequences[sequenceNumber] = seq;
             }
 
-            _buffers[sequenceNumber][fragmentNumber] = fragmentData;
+            Buffer.BlockCopy(fragmentData, 0, seq.Buffer, (int)fragmentOffset, fragmentData.Length);
+            seq.FragmentsReceived++;
 
-            if (_buffers[sequenceNumber].Count == fragmentCount)
+            if (seq.FragmentsReceived == seq.TotalFragments)
             {
-                return Reassemble(sequenceNumber);
+                _sequences.Remove(sequenceNumber);
+                return new PhotonCommand
+                {
+                    Type = CommandType.SendReliableType,
+                    Data = seq.Buffer
+                };
             }
         }
 
         return null;
-    }
-
-    private PhotonCommand Reassemble(int sequenceNumber)
-    {
-        var parts = _buffers[sequenceNumber];
-        int totalFragments = _fragmentCounts[sequenceNumber];
-        
-        using var ms = new MemoryStream();
-        for (int i = 0; i < totalFragments; i++)
-        {
-            if (parts.TryGetValue(i, out byte[]? part))
-            {
-                ms.Write(part, 0, part.Length);
-            }
-        }
-
-        // Clean up memory
-        _buffers.Remove(sequenceNumber);
-        _fragmentCounts.Remove(sequenceNumber);
-
-        return new PhotonCommand
-        {
-            Type = CommandType.SendReliableType,
-            Data = ms.ToArray()
-        };
     }
 }

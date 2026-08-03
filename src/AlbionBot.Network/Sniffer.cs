@@ -218,7 +218,8 @@ public class Sniffer : IDisposable
         {
             foreach (var dev in devices)
             {
-                if (dev.ToString().Contains(activeIp))
+                // ADDED ?. to safely check if ToString() is null
+                if (dev.ToString()?.Contains(activeIp) == true)
                 {
                     Console.WriteLine($"[Sniffer] Auto-matched interface via active IP: {activeIp}");
                     return dev;
@@ -227,6 +228,7 @@ public class Sniffer : IDisposable
         }
 
         var physicalAdapter = devices.FirstOrDefault(d =>
+            d.Description != null && // ADDED NULL CHECK HERE
             (d.Description.Contains("Killer", StringComparison.OrdinalIgnoreCase) ||
              d.Description.Contains("Wi-Fi", StringComparison.OrdinalIgnoreCase) ||
              d.Description.Contains("Wireless", StringComparison.OrdinalIgnoreCase) ||
@@ -245,7 +247,7 @@ public class Sniffer : IDisposable
     {
         try
         {
-            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, System.Net.Sockets.ProtocolType.Udp);
             socket.Connect("8.8.8.8", 65530); 
             if (socket.LocalEndPoint is IPEndPoint endPoint)
             {
