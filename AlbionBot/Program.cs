@@ -5,10 +5,10 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using AlbionBot.Network;
-using AlbionBot.Models;
 using AlbionBot.Photon;
+using AlbionBot.Models;
 
-namespace AlbionBot.Host;
+namespace AlbionBot;
 
 class Program
 {
@@ -16,8 +16,23 @@ class Program
     {
         Console.WriteLine("Starting AlbionBot Native Host...");
 
+        var parser = new AlbionParser();
         var sniffer = new Sniffer();
-        sniffer.OnPhotonPacketReceived += Sniffer_OnReliableCommandReady;
+
+        // Fix: Subscribing to the correct sniffer event name
+        sniffer.OnUdpPayloadCaptured += (payload) =>
+        {
+            parser.ReceiveUdpPayload(payload);
+        };
+
+        parser.OnMessageReady += (message) =>
+        {
+            // Code 1, 75, or 76 represent Market / Auction operations
+            if (message.Code == 1 || message.Code == 75 || message.Code == 76)
+            {
+                ScrapeMarketData(message.RawPayload);
+            }
+        };
 
         sniffer.Start();
 
@@ -28,37 +43,21 @@ class Program
         sniffer.Stop();
     }
 
-    private static void Sniffer_OnReliableCommandReady(object? sender, byte[] payload)
-    {
-        byte[] decompressed = DecompressIfNeeded(payload);
-        
-        var message = Protocol16Deserializer.Deserialize(decompressed);
-        if (message != null)
-        {
-            // Code 1, 75, or 76 are common Market/Auction operations
-            if (message.Code == 1 || message.Code == 75 || message.Code == 76)
-            {
-                ScrapeMarketData(message.RawPayload);
-            }
-        }
-    }
-
     private static void ScrapeMarketData(byte[] rawPayload)
     {
         try
         {
-            // 1. Convert the raw packet bytes directly to text
-            string rawText = Encoding.UTF8.GetString(rawPayload);
+            // Decompress if gzipped
+            byte[] decompressed = DecompressIfNeeded(rawPayload);
+            string rawText = Encoding.UTF8.GetString(decompressed);
             
-            // 2. Use Regex to rip every flat JSON object out of the garbage bytes
-            // This matches exactly: {"Id": [anything] }
+            // Extract individual JSON market items using Regex
             var matches = Regex.Matches(rawText, @"\{""Id"":[^}]+\}");
 
             if (matches.Count == 0) return;
 
             Console.WriteLine($"\n[Market] Intercepted {matches.Count} Market Orders!");
 
-            // 3. Parse them cleanly into your C# object
             foreach (Match match in matches)
             {
                 try
@@ -66,19 +65,16 @@ class Program
                     var order = JsonSerializer.Deserialize<MarketOrder>(match.Value);
                     if (order != null)
                     {
-                        // Print the clean data! (Divide silver by 10000 per Albion's math)
-                        Console.WriteLine($"  -> {order.Amount}x (T{order.Tier}) @ {order.UnitPriceSilver / 10000:N0} silver");
+                        // Albion tracks silver in 10000 increments
+                        Console.WriteLine($"  -> Item ID: {order.ItemTypeId} | Qty: {order.Amount} | Price: {order.UnitPriceSilver / 10000:N0} silver");
                     }
                 }
-                catch 
-                {
-                    // Silently ignore corrupted fragments
-                }
+                catch { /* Ignore invalid fragments */ }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Scraper Error] {ex.Message}");
+            Console.WriteLine($"[Scraper Error]: {ex.Message}");
         }
     }
 
