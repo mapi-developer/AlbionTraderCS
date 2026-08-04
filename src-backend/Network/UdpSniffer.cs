@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using SharpPcap;
 using PacketDotNet;
 
@@ -25,26 +26,34 @@ public class UdpSniffer
 
         if (string.IsNullOrEmpty(deviceName))
         {
-            _device = devices[0];
+            _device = SelectPreferredDevice(devices);
         }
         else
         {
-            foreach (var dev in devices)
+            _device = devices.FirstOrDefault(dev =>
+                dev.Name.Equals(deviceName, StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrEmpty(dev.Description) && dev.Description.Contains(deviceName, StringComparison.OrdinalIgnoreCase)));
+
+            if (_device == null)
             {
-                if (dev.Name.Equals(deviceName, StringComparison.OrdinalIgnoreCase) ||
-                    (dev.Description != null && dev.Description.Contains(deviceName, StringComparison.OrdinalIgnoreCase)))
-                {
-                    _device = dev;
-                    break;
-                }
+                _device = devices.FirstOrDefault(dev =>
+                    !string.IsNullOrEmpty(dev.Description) &&
+                    dev.Description.IndexOf(deviceName, StringComparison.OrdinalIgnoreCase) >= 0);
             }
-            _device ??= devices[0];
+
+            _device ??= SelectPreferredDevice(devices);
         }
 
-        _device.OnPacketArrival += OnPacketArrival;
-        _device.Open(DeviceModes.Promiscuous, 1000);
-        _device.Filter = "udp port 5055 or udp port 5056 or udp port 5058";
-        _device.StartCapture();
+        var device = _device ?? throw new InvalidOperationException("Failed to select a valid capture device.");
+        var deviceDescription = !string.IsNullOrEmpty(device.Description) ? device.Description : device.Name;
+        Console.WriteLine(string.IsNullOrEmpty(deviceName)
+            ? $"No device specified. Using default device: {deviceDescription}"
+            : $"Selected device: {deviceDescription}");
+
+        device.OnPacketArrival += OnPacketArrival;
+        device.Open(DeviceModes.Promiscuous, 1000);
+        device.Filter = "udp port 5055 or udp port 5056 or udp port 5058";
+        device.StartCapture();
         _isSniffing = true;
     }
 
@@ -56,6 +65,36 @@ public class UdpSniffer
             _device.Close();
             _isSniffing = false;
         }
+    }
+
+    private ILiveDevice? SelectPreferredDevice(CaptureDeviceList devices)
+    {
+        var preferredKeywords = new[] { "Killer", "Wi-Fi", "Wireless", "WLAN", "Intel", "Realtek", "Broadcom" };
+
+        var candidate = devices.FirstOrDefault(d =>
+            !string.IsNullOrEmpty(d.Description) &&
+            preferredKeywords.Any(keyword => d.Description.Contains(keyword, StringComparison.OrdinalIgnoreCase)));
+
+        if (candidate != null)
+        {
+            return candidate;
+        }
+
+        candidate = devices.FirstOrDefault(d =>
+            !string.IsNullOrEmpty(d.Description) &&
+            d.Description.Contains("Ethernet", StringComparison.OrdinalIgnoreCase));
+
+        if (candidate != null)
+        {
+            return candidate;
+        }
+
+        return devices.FirstOrDefault(d =>
+            !string.IsNullOrEmpty(d.Description) &&
+            !d.Description.Contains("Loopback", StringComparison.OrdinalIgnoreCase) &&
+            !d.Description.Contains("Virtual", StringComparison.OrdinalIgnoreCase) &&
+            !d.Description.Contains("WAN Miniport", StringComparison.OrdinalIgnoreCase))
+            ?? devices[0];
     }
 
     private void OnPacketArrival(object sender, PacketCapture e)
