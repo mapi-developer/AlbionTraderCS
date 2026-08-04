@@ -2,12 +2,14 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using AlbionBot.Albion;
+using AlbionBot.Infrastructure;
 using AlbionBot.Models;
 using AlbionBot.Network;
 using AlbionBot.Protocol;
 using AlbionBot.Services;
 
 Console.WriteLine("Starting Albion Online packet sniffer...");
+DebugLogger.Log("Starting Albion Online packet sniffer...");
 
 var queue = new PacketBufferQueue();
 var sniffer = new UdpSniffer(queue);
@@ -39,34 +41,49 @@ Console.CancelKeyPress += (_, args) =>
 
 await foreach (var buffer in queue.ReadAllAsync(cts.Token))
 {
+    DebugLogger.Log($"Dequeued buffer length={buffer.Length}");
     try
     {
         foreach (var packet in decoder.DecodeRawPayload(buffer))
         {
+            DebugLogger.Log($"Photon packet commandType=0x{packet.CommandType:X2} payloadLength={packet.Payload.Length}");
+            if (packet.CommandType != 0x06 && packet.CommandType != 0x07)
+            {
+                DebugLogger.Log($"Skipping non-event packet type=0x{packet.CommandType:X2}");
+                continue;
+            }
+
             try
             {
                 var reader = new Protocol16Reader(packet.Payload);
-                var parameters = reader.ReadParameterDictionary();
+                var parameters = reader.TryReadParameterDictionary(out var parsedParameters);
+                if (!parameters)
+                {
+                    DebugLogger.Log("Photon payload did not contain a valid parameter dictionary.");
+                    continue;
+                }
 
-                var marketOrder = AlbionEventDecoder.DecodeMarketOrder(parameters);
+                DebugLogger.Log($"Parsed Photon dictionary with {parsedParameters.Count} keys.");
+
+                var marketOrder = AlbionEventDecoder.DecodeMarketOrder(parsedParameters);
                 if (marketOrder != null)
                 {
                     stateStore.UpdateMarketOrder(marketOrder);
                 }
 
-                var silverUpdate = AlbionEventDecoder.DecodeSilverUpdate(parameters);
+                var silverUpdate = AlbionEventDecoder.DecodeSilverUpdate(parsedParameters);
                 if (silverUpdate != null)
                 {
                     stateStore.UpdateSilver(silverUpdate);
                 }
 
-                var position = AlbionEventDecoder.DecodePlayerPosition(parameters);
+                var position = AlbionEventDecoder.DecodePlayerPosition(parsedParameters);
                 if (position != null)
                 {
                     stateStore.UpdatePosition(position);
                 }
 
-                var inventoryItems = AlbionEventDecoder.DecodeInventoryItems(parameters);
+                var inventoryItems = AlbionEventDecoder.DecodeInventoryItems(parsedParameters);
                 stateStore.UpdateInventory(inventoryItems);
             }
             catch (Exception parseEx)

@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using AlbionBot.Infrastructure;
 
 namespace AlbionBot.Network;
 
@@ -19,6 +20,7 @@ public class PacketBufferQueue
 
     public bool TryEnqueue(byte[] data)
     {
+        DebugLogger.Log($"Queue enqueue length={data.Length}");
         return _channel.Writer.TryWrite(data);
     }
 

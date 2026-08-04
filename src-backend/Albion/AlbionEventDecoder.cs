@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AlbionBot.Infrastructure;
 using AlbionBot.Models;
 using AlbionBot.Protocol;
 
@@ -9,8 +10,10 @@ public static class AlbionEventDecoder
 {
     public static MarketOrder? DecodeMarketOrder(IDictionary<byte, object?> parameters)
     {
+        DebugLogger.Log("Decoding market order event.");
         if (!TryGetValue(parameters, 1, out var orderIdObj) || !TryGetValue(parameters, 2, out var itemIdObj))
         {
+            DebugLogger.Log("Market order missing required parameters.");
             return null;
         }
 
@@ -27,6 +30,7 @@ public static class AlbionEventDecoder
 
     public static SilverUpdate? DecodeSilverUpdate(IDictionary<byte, object?> parameters)
     {
+        DebugLogger.Log("Decoding silver update event.");
         var silver = parameters.TryGetValue(10, out var silverObj) ? Convert.ToInt64(silverObj) : 0;
         var gold = parameters.TryGetValue(11, out var goldObj) ? Convert.ToInt64(goldObj) : 0;
         return new SilverUpdate(silver, gold);
@@ -44,8 +48,10 @@ public static class AlbionEventDecoder
 
     public static IEnumerable<InventoryItem> DecodeInventoryItems(IDictionary<byte, object?> parameters)
     {
+        DebugLogger.Log("Decoding inventory items event.");
         if (!parameters.TryGetValue(30, out var inventoryObj) || inventoryObj is not object?[] inventoryArray)
         {
+            DebugLogger.Log("Inventory event missing expected array payload.");
             yield break;
         }
 
@@ -53,6 +59,7 @@ public static class AlbionEventDecoder
         {
             if (inventoryArray.Length <= i + 3)
             {
+                DebugLogger.Log($"Inventory item entry truncated at index {i}.");
                 break;
             }
 

@@ -1,7 +1,8 @@
 using System;
 using System.Linq;
-using SharpPcap;
+using AlbionBot.Infrastructure;
 using PacketDotNet;
+using SharpPcap;
 
 namespace AlbionBot.Network;
 
@@ -50,9 +51,11 @@ public class UdpSniffer
             ? $"No device specified. Using default device: {deviceDescription}"
             : $"Selected device: {deviceDescription}");
 
+        DebugLogger.Log($"Opening capture device: {deviceDescription}");
         device.OnPacketArrival += OnPacketArrival;
         device.Open(DeviceModes.Promiscuous, 1000);
         device.Filter = "udp port 5055 or udp port 5056 or udp port 5058";
+        DebugLogger.Log($"Capture filter set: {device.Filter}");
         device.StartCapture();
         _isSniffing = true;
     }
@@ -61,6 +64,7 @@ public class UdpSniffer
     {
         if (_device != null && _isSniffing)
         {
+            DebugLogger.Log("Stopping packet capture.");
             _device.StopCapture();
             _device.Close();
             _isSniffing = false;
@@ -103,9 +107,26 @@ public class UdpSniffer
         var packet = Packet.ParsePacket(rawPacket.LinkLayerType, rawPacket.Data);
         var udpPacket = packet.Extract<UdpPacket>();
 
+        string endpointInfo = "unknown";
+        if (udpPacket != null)
+        {
+            var ipPacket = packet.Extract<IPv4Packet>() as PacketDotNet.IPPacket ?? packet.Extract<IPv6Packet>() as PacketDotNet.IPPacket;
+            var sourceAddress = ipPacket?.SourceAddress.ToString() ?? "unknown";
+            var destinationAddress = ipPacket?.DestinationAddress.ToString() ?? "unknown";
+            endpointInfo = $"src={sourceAddress}:{udpPacket.SourcePort} dest={destinationAddress}:{udpPacket.DestinationPort} length={udpPacket.Length}";
+            DebugLogger.Log($"Packet arrived: {endpointInfo}");
+        }
+
         if (udpPacket != null && udpPacket.PayloadData != null && udpPacket.PayloadData.Length > 0)
         {
-            _queue.TryEnqueue(udpPacket.PayloadData);
+            if (!_queue.TryEnqueue(udpPacket.PayloadData))
+            {
+                DebugLogger.Log("Failed to enqueue packet payload because queue is full.");
+            }
+            else
+            {
+                DebugLogger.Log($"Enqueued UDP payload length={udpPacket.PayloadData.Length}");
+            }
         }
     }
 }
