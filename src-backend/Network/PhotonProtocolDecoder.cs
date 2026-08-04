@@ -4,7 +4,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using AlbionBot.Infrastructure;
-using AlbionBot.Protocol;
 
 namespace AlbionBot.Network;
 
@@ -25,46 +24,37 @@ public class PhotonProtocolDecoder
 
     public IEnumerable<PhotonPacket> DecodeRawPayload(ReadOnlyMemory<byte> payload)
     {
-        DebugLogger.Log($"Decoding raw payload length={payload.Length}");
-        using var reader = new BinaryReader(new MemoryStream(payload.ToArray()));
+        using var ms = new MemoryStream(payload.ToArray());
+        using var reader = new BinaryReader(ms);
 
-        if (reader.BaseStream.Length - reader.BaseStream.Position < 12)
-        {
-            DebugLogger.Log("Photon payload too short for header, skipping.");
-            yield break;
-        }
+        if (ms.Length - ms.Position < 12) yield break; // Photon packet header is 12 bytes
 
-        var peerId = reader.ReadUInt16();
+        var peerId = BinaryPrimitives.ReadUInt16BigEndian(reader.ReadBytes(2));
         var flags = reader.ReadByte();
         var commandCount = reader.ReadByte();
-        var timestamp = reader.ReadUInt32();
-        var sequenceNumber = reader.ReadUInt32();
+        var timestamp = BinaryPrimitives.ReadUInt32BigEndian(reader.ReadBytes(4));
+        var sequenceNumber = BinaryPrimitives.ReadUInt32BigEndian(reader.ReadBytes(4));
 
         for (var i = 0; i < commandCount; i++)
         {
-            if (reader.BaseStream.Length - reader.BaseStream.Position < 3)
-            {
-                DebugLogger.Log("Photon command header truncated, stopping decode loop.");
-                yield break;
-            }
+            if (ms.Length - ms.Position < 12) yield break; // Photon command header is 12 bytes
 
             var commandType = reader.ReadByte();
-            var commandSize = BinaryPrimitives.ReadUInt16BigEndian(reader.ReadBytes(2));
-            DebugLogger.Log($"Photon command {i + 1}/{commandCount}: type=0x{commandType:X2}, size={commandSize}");
+            reader.ReadBytes(3); // Skip ChannelId, Flags, Reserved
+            var commandLength = BinaryPrimitives.ReadInt32BigEndian(reader.ReadBytes(4));
+            var reliableSequenceNumber = BinaryPrimitives.ReadInt32BigEndian(reader.ReadBytes(4));
 
-            if (commandSize == 0)
-            {
-                DebugLogger.Log($"Photon command type=0x{commandType:X2} has zero length, skipping.");
-                continue;
-            }
+            // commandLength includes the 12-byte header, so the data payload is commandLength - 12
+            var dataLength = commandLength - 12;
 
-            if (reader.BaseStream.Length - reader.BaseStream.Position < commandSize)
+            if (dataLength < 0 || ms.Position + dataLength > ms.Length)
             {
-                DebugLogger.Log($"Invalid Photon command size={commandSize}, available={reader.BaseStream.Length - reader.BaseStream.Position}");
+                DebugLogger.Log($"Invalid Photon data length={dataLength}, available={ms.Length - ms.Position}");
                 yield break;
             }
 
-            var commandData = reader.ReadBytes(commandSize);
+            var commandData = reader.ReadBytes(dataLength);
+
             var packet = new PhotonPacket
             {
                 PeerId = peerId,
@@ -78,26 +68,16 @@ public class PhotonProtocolDecoder
 
             switch (commandType)
             {
-                case 0x06:
-                case 0x07:
-                    DebugLogger.Log($"Photon payload yielded commandType=0x{commandType:X2}");
+                case 0x06: // SendReliable
+                case 0x07: // SendUnreliable
                     yield return packet;
                     break;
-                case 0x08:
-                    DebugLogger.Log("Photon payload contains fragment packet.");
+                case 0x08: // SendReliableFragment
                     var fragment = DecodeFragment(commandData);
                     if (fragment != null)
                     {
-                        DebugLogger.Log("Fragment reassembled into complete payload.");
                         yield return fragment;
                     }
-                    else
-                    {
-                        DebugLogger.Log("Fragment stored, awaiting remaining segments.");
-                    }
-                    break;
-                default:
-                    DebugLogger.Log($"Skipping unsupported Photon commandType=0x{commandType:X2}");
                     break;
             }
         }
@@ -105,36 +85,34 @@ public class PhotonProtocolDecoder
 
     private PhotonPacket? DecodeFragment(byte[] fragmentData)
     {
-        if (fragmentData.Length < 14)
-        {
-            DebugLogger.Log($"Invalid fragment packet length={fragmentData.Length}");
-            return null;
-        }
+        if (fragmentData.Length < 20) return null; // Fragment header is 20 bytes (5x 32-bit ints)
 
-        using var reader = new BinaryReader(new MemoryStream(fragmentData));
-        var fragmentId = reader.ReadUInt16();
-        var fragmentCount = reader.ReadUInt16();
-        var fragmentNumber = reader.ReadUInt16();
-        var totalLength = reader.ReadUInt32();
-        var payloadLength = reader.ReadUInt16();
+        using var ms = new MemoryStream(fragmentData);
+        using var reader = new BinaryReader(ms);
 
-        if (fragmentData.Length < 14 + payloadLength)
-        {
-            DebugLogger.Log($"Fragment payload length mismatch: expected={payloadLength}, available={fragmentData.Length - 14}");
-            return null;
-        }
+        var sequenceNumber = BinaryPrimitives.ReadUInt32BigEndian(reader.ReadBytes(4));
+        var fragmentCount = BinaryPrimitives.ReadUInt32BigEndian(reader.ReadBytes(4));
+        var fragmentNumber = BinaryPrimitives.ReadUInt32BigEndian(reader.ReadBytes(4));
+        var totalLength = BinaryPrimitives.ReadUInt32BigEndian(reader.ReadBytes(4));
+        var fragmentOffset = BinaryPrimitives.ReadUInt32BigEndian(reader.ReadBytes(4));
 
-        var payload = reader.ReadBytes(payloadLength);
-        DebugLogger.Log($"Fragment packet id={fragmentId} index={fragmentNumber}/{fragmentCount} totalLength={totalLength} payloadLength={payloadLength}");
+        var payload = reader.ReadBytes((int)(ms.Length - ms.Position));
 
-        var buffer = _fragmentBuffers.GetOrAdd(fragmentId, _ => new FragmentBuffer(totalLength, fragmentCount));
-        buffer.AddSegment(fragmentNumber, payload);
+        var buffer = _fragmentBuffers.GetOrAdd((int)sequenceNumber, _ => new FragmentBuffer(totalLength, fragmentCount));
+        
+        // Albion fragments must be written by their explicit offset, not by an index multiplier
+        buffer.AddSegment((int)fragmentOffset, payload);
 
         if (buffer.IsComplete)
         {
-            _fragmentBuffers.TryRemove(fragmentId, out _);
-            DebugLogger.Log($"Fragment id={fragmentId} complete, reassembling.");
-            return new PhotonPacket { Payload = buffer.Reassemble() };
+            _fragmentBuffers.TryRemove((int)sequenceNumber, out _);
+            DebugLogger.Log($"Fragment sequence {sequenceNumber} complete, reassembling.");
+            
+            return new PhotonPacket 
+            { 
+                CommandType = 0x06, // Reassembled packets are treated as standard SendReliable packets 
+                Payload = buffer.Reassemble() 
+            };
         }
 
         return null;
@@ -143,27 +121,26 @@ public class PhotonProtocolDecoder
     private sealed class FragmentBuffer
     {
         private readonly byte[] _data;
-        private readonly bool[] _received;
-        private readonly int _segmentCount;
+        private int _fragmentsReceived;
+        private readonly int _totalFragments;
 
         public FragmentBuffer(uint totalLength, uint segmentCount)
         {
             _data = new byte[totalLength];
-            _segmentCount = (int)segmentCount;
-            _received = new bool[_segmentCount];
+            _totalFragments = (int)segmentCount;
+            _fragmentsReceived = 0;
         }
 
-        public void AddSegment(int segmentIndex, byte[] segmentData)
+        public void AddSegment(int offset, byte[] segmentData)
         {
-            var offset = segmentIndex * segmentData.Length;
-            Buffer.BlockCopy(segmentData, 0, _data, offset, segmentData.Length);
-            if (segmentIndex >= 0 && segmentIndex < _segmentCount)
+            if (offset >= 0 && offset + segmentData.Length <= _data.Length)
             {
-                _received[segmentIndex] = true;
+                Buffer.BlockCopy(segmentData, 0, _data, offset, segmentData.Length);
+                _fragmentsReceived++;
             }
         }
 
-        public bool IsComplete => Array.TrueForAll(_received, value => value);
+        public bool IsComplete => _fragmentsReceived >= _totalFragments;
 
         public ReadOnlyMemory<byte> Reassemble() => _data;
     }

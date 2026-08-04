@@ -1,4 +1,5 @@
 using System;
+using System.IO.Compression;
 using System.Threading;
 using System.Threading.Tasks;
 using AlbionBot.Albion;
@@ -55,17 +56,30 @@ await foreach (var buffer in queue.ReadAllAsync(cts.Token))
 
             try
             {
-                var reader = new Protocol16Reader(packet.Payload);
-                var parameters = reader.TryReadParameterDictionary(out var parsedParameters);
-                if (!parameters)
+                byte[] payloadData = packet.Payload.ToArray();
+
+                // Handle optional GZIP decompression
+                if (payloadData.Length >= 2 && payloadData[0] == 0x1F && payloadData[1] == 0x8B)
                 {
-                    DebugLogger.Log("Photon payload did not contain a valid parameter dictionary.");
+                    using var compressedStream = new MemoryStream(payloadData);
+                    using var gzipStream = new GZipStream(compressedStream, CompressionMode.Decompress);
+                    using var resultStream = new MemoryStream();
+                    gzipStream.CopyTo(resultStream);
+                    payloadData = resultStream.ToArray();
+                }
+
+                var reader = new Protocol16Reader(payloadData);
+
+                // Use the new signature-checking event reader
+                if (!reader.TryReadEventOrResponse(out var parsedParameters))
+                {
                     continue;
                 }
 
                 DebugLogger.Log($"Parsed Photon dictionary with {parsedParameters.Count} keys.");
 
                 var marketOrder = AlbionEventDecoder.DecodeMarketOrder(parsedParameters);
+                // ... (rest of your decoding logic remains the same)
                 if (marketOrder != null)
                 {
                     stateStore.UpdateMarketOrder(marketOrder);
